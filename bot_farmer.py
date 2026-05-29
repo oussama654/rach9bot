@@ -9,24 +9,21 @@ from telethon.tl.functions.channels import JoinChannelRequest, LeaveChannelReque
 from telethon.tl.functions.messages import ImportChatInviteRequest, StartBotRequest
 from telethon.errors import FloodWaitError, UserAlreadyParticipantError
 
-# جلب البيانات من بيئة GitHub Secrets
+# إعدادات البيئة من جيت هوب
 API_ID = int(os.environ.get("TELEGRAM_API_ID", 0))
 API_HASH = os.environ.get("TELEGRAM_API_HASH", "")
 SESSION_STRING = os.environ.get("TELEGRAM_SESSION", "")
 
 client = TelegramClient(StringSession(SESSION_STRING), API_ID, API_HASH)
 
-# حل مشكلة التكرار: ذاكرة لتخزين الروابط والأكواد التي تم استخدامها مسبقاً
+# ذاكرة الحظر والتكرار لتجنب إعادة معالجة الروابط أو الأكواد القديمة
 processed_items = set()
-
-# قاموس لتتبع عدد محاولات الضغط على زر "التحقق" لكل بوت لتجنب الحلقات اللانهائية
 verification_tracker = {}
-# تتبع نشاط القنوات للمغادرة بعد 6 ساعات
 channels_activity = {}
 SIX_HOURS = 6 * 60 * 60
 
 async def join_channel(channel_link):
-    """دالة الانضمام للقنوات الإجبارية مع معالجة الروابط العامة والخاصة"""
+    """الانضمام الذكي للقنوات الإجبارية"""
     try:
         if "+" in channel_link or "joinchat" in channel_link:
             invite_hash = channel_link.split("/")[-1].replace("+", "")
@@ -34,105 +31,120 @@ async def join_channel(channel_link):
         else:
             username = channel_link.split("/")[-1]
             await client(JoinChannelRequest(username))
-        print(f"[+] تم الانضمام إلى القناة: {channel_link}")
-        # انتظار بسيط بين الانضمامات لتجنب الحظر
+        print(f"[+] تم الانضمام بنجاح: {channel_link}")
         await asyncio.sleep(random.randint(2, 4))
     except UserAlreadyParticipantError:
         pass
     except Exception as e:
         print(f"[-] فشل الانضمام إلى {channel_link}: {e}")
 
+async def process_link_bot(bot_username, start_payload):
+    """معالجة روابط التمويل المباشرة محاكية لضغطات البشر"""
+    try:
+        delay = random.randint(5, 9)
+        print(f"[*] رابط تمويل مباشر. جاري الانتظار {delay} ثوانٍ لمحاكاة العنصر البشري...")
+        await asyncio.sleep(delay)
+        
+        # الضغط الرسمي على الرابط
+        await client(StartBotRequest(bot=bot_username, peer=bot_username, start_param=start_payload))
+        print(f"[+] تم تفعيل رابط البوت بنجاح: {bot_username}")
+    except FloodWaitError as e:
+        print(f"[!] تفادي الحظر: يجب الانتظار {e.seconds} ثانية.")
+        await asyncio.sleep(e.seconds)
+    except Exception as e:
+        print(f"[-] خطأ في معالجة رابط البوت {bot_username}: {e}")
+
+async def process_code_bot(bot_username, extracted_code):
+    """فتح محادثة تفاعلية خطوة بخطوة مع بوتات الأكواد مثل طلباتي"""
+    try:
+        print(f"[*] بدء تدفق تفاعلي مع بوت الأكواد (@{bot_username}) للكود: {extracted_code}")
+        
+        # فتح محادثة (Conversation) مخصصة تنتظر ردود البوت بدقة
+        async with client.conversation(bot_username, timeout=20) as conv:
+            # 1. إرسال ستارت للبوت
+            await conv.send_message("/start")
+            
+            # 2. الانتظار حتى يستجيب البوت ويرسل القائمة التي تحتوي الأزرار
+            bot_reply = await conv.get_response()
+            
+            target_button = None
+            if bot_reply.buttons:
+                for row in bot_reply.buttons:
+                    for button in row:
+                        if "استخدام" in button.text or "كود" in button.text:
+                            target_button = button
+                            break
+            
+            if target_button:
+                # محاكاة التفكير البشري قبل الضغط
+                await asyncio.sleep(random.randint(2, 3))
+                await target_button.click()
+                print(f"[+] تم الضغط على زر '{target_button.text}'. ننتظر طلب البوت للكود...")
+                
+                # 3. الانتظار حتى يطلب البوت الكود (الاستجابة التالية)
+                await conv.get_response()
+                
+                # 4. إرسال الكود فوراً وبسرعة لنكون أول المستفيدين
+                await asyncio.sleep(1)
+                await conv.send_message(extracted_code)
+                print(f"[🎉] تم تسليم الكود بنجاح لبوت {bot_username}!")
+            else:
+                print(f"[-] لم يتم العثور على زر استخدام الكود في رد بوت {bot_username}.")
+                
+    except asyncio.TimeoutError:
+        print(f"[-] انتهت مهلة الاستجابة من البوت {bot_username} (البوت بطيء أو معلق).")
+    except Exception as e:
+        print(f"[-] خطأ أثناء التفاعل مع بوت الأكواد {bot_username}: {e}")
+
 @client.on(events.NewMessage)
-async def handle_new_messages(event):
+async def handle_incoming_content(event):
     chat_id = event.chat_id
     text = event.raw_text or ""
     
-    # استخراج الروابط النصية والمخفية (Hyperlinks) لكي لا يفوتنا أي رابط
+    # تجميع كافة الروابط (نصية أو مخفية كـ Hyperlinks)
     urls = []
     if event.entities:
         for entity in event.entities:
             if hasattr(entity, 'url') and entity.url:
                 urls.append(entity.url)
-    
-    # إضافة الروابط العادية الموجودة في النص
     raw_urls = re.findall(r'(https?://t\.me/[^\s]+)', text)
     urls.extend(raw_urls)
     
-    # --- القسم الأول: معالجة روابط التمويل المباشرة (?start=) ---
+    # أولاً: التحقق من روابط التمويل المباشرة (?start=)
     for url in urls:
         bot_match = re.search(r"t\.me/([a-zA-Z0-9_]+)\?start=([a-zA-Z0-9_]+)", url)
         if bot_match:
             bot_username = bot_match.group(1)
             start_payload = bot_match.group(2)
             
-            # منع التكرار: إذا تم استخدام هذا الرابط/الكود من قبل، تخطاه فوراً
-            if start_payload in processed_items:
-                return
-                
-            processed_items.add(start_payload)
-            channels_activity[chat_id] = time.time()
-            
-            # انتظار عشوائي لمنع الحظر والسبام (بين 5 إلى 9 ثوانٍ)
-            delay = random.randint(5, 9)
-            print(f"[*] تم رصد رابط جديد. جاري الانتظار {delay} ثوانٍ للضغط كالبشر...")
-            await asyncio.sleep(delay)
-            
-            try:
-                # محاكاة ضغط الرابط الحقيقي بدلاً من إرسال رسالة نصية عادية
-                await client(StartBotRequest(bot=bot_username, peer=bot_username, start_param=start_payload))
-                print(f"[+] تم النقر على الرابط بنجاح وتفعيل البوت: {bot_username}")
-            except FloodWaitError as e:
-                print(f"[!] تم حظر العمل مؤقتاً (FloodWait)، يجب الانتظار {e.seconds} ثانية.")
-                await asyncio.sleep(e.seconds)
-            except Exception as e:
-                print(f"[-] خطأ أثناء تفعيل الرابط: {e}")
+            if start_payload not in processed_items:
+                processed_items.add(start_payload)
+                channels_activity[chat_id] = time.time()
+                # تشغيل المهمة في الخلفية فوراً لعدم تجميد السكريبت
+                asyncio.create_task(process_link_bot(bot_username, start_payload))
 
-    # --- القسم الثاني: معالجة نظام الأكواد (مثل بوت طلباتي و FAABOT) ---
+    # ثانياً: التحقق من نظام الأكواد (مثل طلباتي / FAABOT)
     if "الكود" in text or "كود" in text:
-        # البحث عن الكود (كلمة أو أرقام تأتي بعد كلمة الكود)
         code_match = re.search(r"(?:الكود|كود)\s*:\s*([a-zA-Z0-9]+)", text)
         if code_match:
             extracted_code = code_match.group(1)
             
-            # منع التكرار
-            if extracted_code in processed_items:
-                return
-            processed_items.add(extracted_code)
-            
-            # البحث عن اسم معرف البوت المستهدف في الرسالة
-            bot_username = "TALABATI_BOT" # الافتراضي في حال لم يجده
-            bot_name_match = re.search(r"@([a-zA-Z0-9_]+[bB][oO][tT])", text)
-            if bot_name_match:
-                bot_username = bot_name_match.group(1)
+            if extracted_code not in processed_items:
+                processed_items.add(extracted_code)
+                channels_activity[chat_id] = time.time()
                 
-            print(f"[*] تم رصد كود نقاط لـ {bot_username}: {extracted_code}")
-            
-            # الدخول للبوت والتعامل مع الأزرار الشفافة
-            try:
-                # بدء المحادثة مع البوت أولاً
-                await client.send_message(bot_username, "/start")
-                await asyncio.sleep(2)
+                # تخمين المعرف الافتراضي أو استخراجه من النص
+                bot_username = "TALABATI_BOT"
+                bot_name_match = re.search(r"@([a-zA-Z0-9_]+[bB][oO][tT])", text)
+                if bot_name_match:
+                    bot_username = bot_name_match.group(1)
                 
-                # جلب آخر رسالة من البوت للبحث عن زر "استخدام كود"
-                async for message in client.iter_messages(bot_username, limit=1):
-                    if message.buttons:
-                        for row in message.buttons:
-                            for button in row:
-                                if "استخدام كود" in button.text or "كود" in button.text:
-                                    print(f"[*] جاري الضغط على زر: {button.text}")
-                                    await button.click()
-                                    # الانتظار حتى يطلب البوت إرسال الكود
-                                    await asyncio.sleep(2)
-                                    # إرسال الكود المستخرج للبوت فوراً ل نكون أول المستلمين
-                                    await client.send_message(bot_username, extracted_code)
-                                    print(f"[+] تم إرسال الكود {extracted_code} بنجاح إلى البوت!")
-                                    break
-            except Exception as e:
-                print(f"[-] خطأ أثناء تفعيل كود النقاط: {e}")
+                # تشغيل المهمة فوراً وبشكل منفصل لسرعة الاستجابة
+                asyncio.create_task(process_code_bot(bot_username, extracted_code))
 
 @client.on(events.NewMessage)
-async def handle_bot_verification(event):
-    """التعامل مع ردود البوتات وحل مشكلة حلقة التحقق الإجباري اللانهائية"""
+async def handle_forced_subscriptions(event):
+    """معالجة الاشتراكات الإجبارية للبوتات عند الرد وتأكيد التحقق"""
     if not event.is_private:
         return
         
@@ -142,63 +154,61 @@ async def handle_bot_verification(event):
         bot_username = sender.username
         
         if "اشترك" in text or "الاشتراك" in text or "قناة" in text or "غير مشترك" in text:
-            # تتبع المحاولات لمنع التعليق اللانهائي إذا كانت القناة محذوفة أو بها مشكلة
             attempts = verification_tracker.get(bot_username, 0)
             if attempts > 3:
-                print(f"[!] تم تخطي البوت {bot_username} لتجاوزه حد محاولات التحقق الفاشلة (تجنباً للحظر).")
                 return
                 
-            print(f"[*] البوت {bot_username} يطلب اشتراكاً إجبارياً...")
+            print(f"[*] البوت {bot_username} يطلب قنوات إجبارية، جاري الاشتراك...")
             
-            # 1. الانضمام عبر الأزرار الشفافة
+            # الاشتراك من الأزرار أو الروابط النصية
             if event.buttons:
                 for row in event.buttons:
                     for button in row:
                         if button.url and "t.me" in button.url:
                             await join_channel(button.url)
             
-            # 2. الانضمام عبر الروابط النصية
             urls = re.findall(r'(https?://t\.me/[^\s]+)', text)
             for url in urls:
                 if "bot" not in url.lower():
                     await join_channel(url)
             
-            # --- حل مشكلة عدم التزامن ---
-            # ننتظر 4 ثوانٍ كاملة للتأكد من أن سيرفرات تيليجرام سجلت الحساب في القنوات قبل الضغط
-            print("[*] جاري الانتظار 4 ثوانٍ ليتزامن الاشتراك في السيرفرات...")
+            # مهلة ضرورية لتزامن البيانات في سيرفرات تيليجرام
             await asyncio.sleep(4)
             
-            # 3. الضغط على زر التحقق
+            # الضغط على زر التحقق والتأكيد
             if event.buttons:
                 for row in event.buttons:
                     for button in row:
-                        if button.text and ("تحقق" in button.text or "Check" in button.text or "اشتركت" in button.text or "تأكيد" in button.text):
-                            print(f"[*] جاري الضغط على زر التأكيد: {button.text}")
+                        if button.text and any(keyword in button.text for keyword in ["تحقق", "Check", "اشتركت", "تأكيد"]):
+                            print(f"[*] الضغط على زر التأكيد للبوت {bot_username}")
                             verification_tracker[bot_username] = attempts + 1
                             await button.click()
                             return
 
 async def channel_cleaner():
-    """مهمة تنظيف لمغادرة القنوات الخاملة كل 6 ساعات لمنع امتلاء الحساب"""
+    """مغادرة القنوات التي لم تنشر عروضاً منذ 6 ساعات"""
     while True:
-        await asyncio.sleep(3600) # فحص دوري كل ساعة
+        await asyncio.sleep(3600)
         current_time = time.time()
         for chat_id, last_time in list(channels_activity.items()):
             if current_time - last_time > SIX_HOURS:
                 try:
                     await client(LeaveChannelRequest(chat_id))
-                    print(f"[!] تم مغادرة القناة {chat_id} تلقائياً بسبب الخمول.")
+                    print(f"[!] تم تنظيف ومغادرة القناة الخاملة: {chat_id}")
                     del channels_activity[chat_id]
                     await asyncio.sleep(5)
                 except Exception as e:
                     print(f"[-] خطأ أثناء مغادرة القناة {chat_id}: {e}")
 
 async def main():
-    print("[*] تم تشغيل النظام المطور بنجاح. جاري صيد النقاط والأكواد...")
+    print("[*] تم تفعيل النظام الخالي من الثغرات. جاري العمل...")
     asyncio.create_task(channel_cleaner())
     await client.run_until_disconnected()
 
 if __name__ == '__main__':
-    with client:
-        client.loop.run_until_complete(main())
+    try:
+        with client:
+            client.loop.run_until_complete(main())
+    except Exception as fatal_err:
+        print(f"[💥] خطأ في تشغيل السكريبت الرئيسي: {fatal_err}")
 
