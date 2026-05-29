@@ -1,10 +1,14 @@
-name: Telegram Auto Farmer
+name: Telegram Auto Farmer Pro
 
 on:
   schedule:
-    # إعادة التشغيل كل 5 ساعات لتجنب حد 6 ساعات الخاص بـ GitHub
     - cron: "0 */5 * * *"
-  workflow_dispatch: # يتيح لك تشغيله يدوياً
+  workflow_dispatch:
+
+# منع التداخل كلياً: لو اشتغل سيرفر جديد، يتم قتل السيرفر القديم فوراً لحماية حسابك وجلستك
+concurrency:
+  group: telegram-farmer-session
+  cancel-in-progress: true
 
 jobs:
   build:
@@ -31,5 +35,4 @@ jobs:
         TELEGRAM_SESSION: ${{ secrets.TELEGRAM_SESSION }}
       run: |
         timeout 5h python bot_farmer.py || true
-
 
